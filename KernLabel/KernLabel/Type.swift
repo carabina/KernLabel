@@ -155,7 +155,7 @@ struct Type {
 
     /**
      y の開始位置を移動
-     一行目であれば、ascender 分だけを加算する（lineHeight だと descender も含まれるので上が不自然に開いてしまうので）
+     一行目であれば、ascender 分だけを加算する（lineHeight だと descent + leading が含まれてしまい上が不自然に開いてしまうので）
      */
     private mutating func goToNextLinePosition() {
         self.currentPosition.y += (self.lines == 0) ? self.font.ascender : self.lineHeight
@@ -310,18 +310,16 @@ struct Type {
         - on: 描画する context
      - returns: 描画した行の実質的な幅(長さ)
      */
-    private func getCTLine(range: NSRange, offset: CGFloat, burasagari: Bool = false, oikomi: Bool = false) -> (CGFloat, CGFloat, CGFloat, CTLine) {
-
-        // 描画開始位置を設定。offsetで行頭約物の位置を修正
-        let offsetX = self.startPosition.x + self.currentPosition.x + self.padding.left - offset
-        let offsetY = self.startPosition.y + self.currentPosition.y + self.padding.top
+    private mutating func getCTLine(range: NSRange, offset: CGFloat, burasagari: Bool = false, oikomi: Bool = false)
+        -> (CGFloat, CGFloat, CGFloat, CGFloat, CGFloat, CTLine) {
 
         // 行を生成
         var ctline = CTTypesetterCreateLine(
             self.typesetter, CFRangeMake(range.location, range.length))
 
         // 実質の文字の幅を取得
-        let typographicWidth = CTLineGetTypographicBounds(ctline, nil, nil, nil)
+        var ascent: CGFloat = 0, descent: CGFloat = 0, leading: CGFloat = 0
+        let typographicWidth = CTLineGetTypographicBounds(ctline, &ascent, &descent, &leading)
 
         // 均等揃えする。ぶら下がりのために、右側のスペースを開けておく
         if let alignment = self.attributedText.textAlignment where alignment == .Justified {
@@ -334,7 +332,8 @@ struct Type {
                 }
             }
         }
-        return (CGFloat(typographicWidth), offsetX, offsetY, ctline)
+
+        return (CGFloat(typographicWidth), offset, ascent, descent, leading, ctline)
     }
 
     private func fillBackgroundColor(rect: CGRect, on context: CGContext?) {
@@ -417,12 +416,12 @@ struct Type {
 
         let context: CGContext? = needsDrawing ? self.createContext(canvasContext) : nil
 
-        /// currentLongestTypographicWidth, offsetX, offsetY, ctline
-        var lines: [(CGFloat, CGFloat, CGFloat, CTLine)] = []
+        /// currentLongestTypographicWidth, offset, ascent, descent, leading, ctline
+        var lines: [(CGFloat, CGFloat, CGFloat, CGFloat, CGFloat, CTLine)] = []
 
         while self.location < self.length {
 
-            self.goToNextLinePosition()
+            //self.goToNextLinePosition()
             var offset = self.getOffset()
             let (currentLineCount, burasagari, oikomi) = self.getSuggestedLineCount(offset)
             var range = self.getCurrentLineRange(currentLineCount)
@@ -455,13 +454,28 @@ struct Type {
             self.goToNextLine(currentLineCount)
         }
 
+
+        var linesDrawn: [(CGFloat, CGFloat, CGFloat, CTLine)] = [], maxWidth: CGFloat = 0
+        lines.enumerate().forEach { body in
+            let index = body.index, (typographicWidth, offset, ascent, descent, leading, ctline) = body.element
+
+            // 最初の行であれば
+            self.currentPosition.y += (index == 0) ? (ascent) : (ascent + descent + leading)
+
+            // 描画開始位置を設定。offsetで行頭約物の位置を修正
+            let offsetX = self.startPosition.x + self.currentPosition.x + self.padding.left - offset
+            let offsetY = self.startPosition.y + self.currentPosition.y + self.padding.top
+
+            self.currentPosition.y += (index == lines.count - 1) ? descent : 0
+            maxWidth = typographicWidth > maxWidth ? typographicWidth : maxWidth
+            linesDrawn += [(typographicWidth, offsetX, offsetY, ctline)]
+        }
+
         // 文字の大きさを補足
-        self.intrinsicTextSize = CGSizeMake(
-            lines.maxElement { $0.0 < $1.0 }?.0 ?? self.width,  // 最も大きい typographicWidth
-            CGFloat(Int(self.currentPosition.y + self.font.ascender - self.font.capHeight)))
+        self.intrinsicTextSize = CGSizeMake(maxWidth, CGFloat(Int(self.currentPosition.y)))
 
         // 全ての行を描画
-        self.drawLines(lines, on: context)
+        self.drawLines(linesDrawn, on: context)
 
         return context
     }
